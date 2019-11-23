@@ -24,9 +24,8 @@ s2 and s3 are two switches which are connected to with ports
 1 and 2. Switches 1 and 4 connect to switch 2 on port 1 
 and switch 3 on port 2, and an arbitrary number of other hosts
 on the rest of their ports.
-     
-There are expected to be the same number of hosts attached to
-switches 1 and 4 
+
+It is expected that the network configuration will not change after startup
 
 Additionally it assumes that the dpid of switch 1 is 1, the dpid of
 switch 2 is 2, and so forth. Finally, it takes as a command line argument
@@ -51,24 +50,25 @@ class SmartSwitchController (object):
     of the diamond.
     
     On startup, the controller will set the following rules
-    * Ports 1 and 2 will be marked no-flood
-    * Any message received on port > 2 will be forwarded to this controller,
+    1. Ports 1 and 2 will be marked no-flood
+    2. Any message received on port > 2 will be forwarded to this controller,
         flooded to all ports > 2, and forwarded to port 1
-    * Any message received on port 1 or port 2, which has a destination
-        in one of the directly attached hosts will be flooded to all ports
+    3. Any message received on port 1 or port 2 will be flooded to all ports
         other than 1 and 2
-    * Any message received on port 1 or port 2 which has a destination
-        in a host that is not directly attached will be dropped
-    
+        
     This initial configuration should support general communication
     around the diamond. After startup, the following modifications
     will be automatically made
     
-    When a message is received on port > 2, the mac address of the sender
+    When a message is received on port > 2, the mac and IP address of the sender
     will be recorded and two new flow rules will be added with higher priority
     than the default rules.
-    * Messages with that mac will be forwarded to that port
-    * Messages from that port will be forwarded to port 1
+    4. Messages for that mac will be forwarded to that port
+    5. Messages from that mac will be forwarded to port 1
+    
+    This will override initial rules 2 and 3. Note rule 4 must have higher priority
+    than rule 5 so that rule 4 for a different mac address can preempt rule 5 when
+    the message is from two hosts connected to the same switch.
     
     Finally, during runtime, this controller can be commanded to set the route
     for a specific IP address pair to be port 1 or 2. If exactly 1 of the IP addresses
@@ -83,8 +83,10 @@ class SmartSwitchController (object):
     * Waiting for a TCP connection to be established before setting this route
     """
     
-    PRIORITY_FLOOD_FORWARD_ALWAYS = of.OFP_DEFAULT_PRIORITY + 1
+    PRIORITY_FLOOD_FORWARD_ALWAYS = 1
     PRIORITY_FLOOD_IF_PORT = PRIORITY_FLOOD_FORWARD_ALWAYS + 1
+    PRIORITY_SEND_FROM_MAC = PRIORITY_FLOOD_IF_PORT + 1
+    PRIORITY_SEND_TO_MAC = PRIORITY_SEND_FROM_MAC + 1
     
     def __no_flood_mod(self, port):
         """
@@ -123,25 +125,83 @@ class SmartSwitchController (object):
         msg.priority = self.PRIORITY_FLOOD_IF_PORT
         msg.match.in_port = port_num
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+        
+        return msg;
+        
+    def __send_for_mac_to_port(self, mac, port):
+        """
+        Creates a flow mod to send messages for a specific
+        mac address to a specific port #
+        """
+        msg = of.ofp_flow_mod()
+        msg.priority = self.PRIORITY_SEND_TO_MAC
+        msg.match.dl_dst = mac
+        msg.match.port = None
+        msg.actions.append(of.ofp_action_output(port = port))
+        
+        return msg;
+        
+    def __send_from_mac_to_port1(self, mac):
+        """
+        Creates a flow mod to send messages from a specific
+        mac address to port 1
+        """
+        msg = of.ofp_flow_mod()
+        msg.priority = self.PRIORITY_SEND_FROM_MAC
+        msg.match.dl_src = mac
+        msg.match.port = None
+        msg.actions.append(of.ofp_action_output(port = 1))
+        
         return msg;
         
     def __set_initial_config(self):
-        # Ports 1 and 2 will be marked no-flood
+        # 1. Ports 1 and 2 will be marked no-flood
         self.__connection.send(self.__no_flood_mod(1))
         self.__connection.send(self.__no_flood_mod(2))
         
-        # Any message received will be forwarded to this controller,
+        # 2. Any message received will be forwarded to this controller,
         # flooded, and forwarded to port 1.
         # Since ports 1 and 2 are no-flood, it will only flood
         # to the ports > 2
         self.__connection.send(self.__flood_and_forward_always_mod())
         
-        # Any message received on port 1 or port 2 will be flooded to all ports
+        # 3. Any message received on port 1 or port 2 will be flooded to all ports
         # other than 1 and 2; this will preempt the mod above by priority
         # so messages from ports 1 and 2 will not get forwarded to port 1
         # or to this controller
         self.__connection.send(self.__flood_if_port_mod(1))
         self.__connection.send(self.__flood_if_port_mod(2))
+        
+    def __learn_port(self, port, mac):
+        """
+        Learns that a specific mac address is attached
+        to a specific port and reconfigures the switch
+        according to rules 4 and 5
+        """
+        # Future Improvements to support dynamic hosts: 
+        #
+        # Track port -> mac also. If port assigned to different
+        # mac, then undo that assignment so that if that device is plugged
+        # in elsewhere, its messages are forwarded to controller by rule 2
+        #
+        # Listen to portadded/portremoved messages to do some of this configuration
+        #
+        # Put a fairly short timeout on rules 4 and 5 so that if the device is unplugged
+        # its flow rule will be un-learned
+        
+        if mac in self.__mac_to_port:
+            log.debug("Duplicate port/mac mapping: {} -> {}".format(port, mac))
+            return
+        
+        log.info("Switch {} mapping port {} to mac {}".format(self.__dpid, port, mac))
+        self.__mac_to_port[mac] = port
+        
+        # 4. Messages for that mac will be forwarded to that port
+        self.__connection.send(self.__send_for_mac_to_port(mac, port))
+        
+        # 5. Messages from that mac will be forwarded to port 1
+        self.__connection.send(self.__send_from_mac_to_port1(mac))
+        
     
     def __init__(self, connection):
         log.info("Smart switch {} connected".format(connection.dpid))
@@ -150,9 +210,8 @@ class SmartSwitchController (object):
         self.__dpid = connection.dpid
         
         self.__connection.addListenerByName("PacketIn", self.__packetIn)
-        self.__connection.addListenerByName("PortStatus", self.__portStatus)
         
-        self.__ports = {}
+        self.__mac_to_port = {}
 
         self.__set_initial_config()
             
@@ -163,14 +222,12 @@ class SmartSwitchController (object):
           return
 
         packet_in = event.ofp # The actual ofp_packet_in message.
-        log.info("Switch {} got packet on port {}".format(self.__dpid, event.port))
+        log.debug("Switch {} got packet on port {}".format(self.__dpid, event.port))
         
-    def __portStatus(self, event):
-        if event.added:
-            log.info("Switch {} added port {}".format(self.__dpid, event.port))
-        elif event.deleted:
-            log.info("Switch {} removed port {}".format(self.__dpid, event.port))
-    
+        eth = packet_type.find("ethernet")
+        if eth:
+            self.__learn_port(event.port, eth.src)
+        
 class DumbSwitchController (object):
     """
     Switch controller for switches 2 and 3.
