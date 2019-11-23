@@ -34,7 +34,9 @@ switch 2 is 2, and so forth.
 """
 
 from pox.core import core
+from pox.lib.addresses import EthAddr
 import pox.openflow.libopenflow_01 as of
+
 from .flow_table_priorities import *
 
 log = core.getLogger("diamond-controller")
@@ -64,10 +66,11 @@ class SmartSwitchController (object):
     than the default rules.
     4. Messages for that mac will be forwarded to that port
     5. Messages from that mac will be forwarded to port 1
+    6. Messages from that mac to the broadcast address will be flooded and forwarded to port 1
     
-    This will override initial rules 2 and 3. Note rule 4 must have higher priority
-    than rule 5 so that rule 4 for a different mac address can preempt rule 5 when
-    the message is from two hosts connected to the same switch.
+    This will override initial rules 2 and 3. Note rule 4 must 
+    have higher priority than rule 5 so it can preempt rule 5 when
+    there is a message going between two hosts on the same switch
     """
     
     def __no_flood_mod(self, port):
@@ -114,7 +117,7 @@ class SmartSwitchController (object):
         
         return msg;
         
-    def __send_for_mac_to_port(self, mac, port):
+    def __send_for_mac_to_port_mod(self, mac, port):
         """
         Creates a flow mod to send messages for a specific
         mac address to a specific port #
@@ -127,7 +130,7 @@ class SmartSwitchController (object):
         
         return msg;
         
-    def __send_from_mac_to_port1(self, mac):
+    def __send_from_mac_to_port1_mod(self, mac):
         """
         Creates a flow mod to send messages from a specific
         mac address to port 1
@@ -136,6 +139,21 @@ class SmartSwitchController (object):
         msg.priority = PRIORITY_SEND_FROM_MAC
         msg.match.dl_src = mac
         msg.match.port = None
+        msg.actions.append(of.ofp_action_output(port = 1))
+        
+        return msg;
+      
+    def __broadcast_from_mac_mod(self, mac):
+        """
+        Creates a flow mod to flood
+        flood and forward to port 1
+        any messages broadcast by a sepcific mac
+        """
+        msg = of.ofp_flow_mod()
+        msg.priority = PRIORITY_BROADCAST_FROM_MAC
+        msg.match.dl_src = mac
+        msg.match.dl_dst = EthAddr("ff:ff:ff:ff:ff:ff")
+        msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         msg.actions.append(of.ofp_action_output(port = 1))
         
         return msg;
@@ -162,7 +180,7 @@ class SmartSwitchController (object):
         """
         Learns that a specific mac address is attached
         to a specific port and reconfigures the switch
-        according to rules 4 and 5
+        according to rules 5 and 6
         """
         # Future Improvements to support dynamic hosts: 
         #
@@ -179,14 +197,17 @@ class SmartSwitchController (object):
             self.log.debug("Duplicate port/mac mapping: {} -> {}".format(port, mac))
             return
         
-        self.log.info("Mapping port {} to mac {}".format(self.__dpid, port, mac))
+        self.log.info("Mapping port {} to mac {}".format(port, mac))
         self.__mac_to_port[mac] = port
         
         # 4. Messages for that mac will be forwarded to that port
-        self.__connection.send(self.__send_for_mac_to_port(mac, port))
+        self.__connection.send(self.__send_for_mac_to_port_mod(mac, port))
         
         # 5. Messages from that mac will be forwarded to port 1
-        self.__connection.send(self.__send_from_mac_to_port1(mac))
+        self.__connection.send(self.__send_from_mac_to_port1_mod(mac))
+        
+        # 6. Messages from that mac to the broadcast address will be flooded and forwarded to port 1
+        self.__connection.send(self.__broadcast_from_mac_mod(mac))
         
     def __try_set_default_route(self):
         if self.__default_route_is_setup:
@@ -194,10 +215,10 @@ class SmartSwitchController (object):
     
         try:
             self.__set_default_route()
-            self.log.info("Setup default routes".format(self.__dpid))
+            self.log.info("Setup default routes")
             self.__default_route_is_setup = True
         except MissingPortError as ex:
-            self.log.warning("Unable to set default route; missing port {}".format(self.__dpid, ex.port))
+            self.log.warning("Unable to set default route; missing port {}".format(ex.port))
    
     
     def __init__(self, connection):
@@ -223,7 +244,7 @@ class SmartSwitchController (object):
           return
 
         packet_in = event.ofp # The actual ofp_packet_in message.
-        self.log.debug("Got packet on port {}".format(self.__dpid, event.port))
+        self.log.debug("Got packet on port {}".format(event.port))
         
         eth = packet_type.find("ethernet")
         if eth:
