@@ -35,6 +35,7 @@ switch 2 is 2, and so forth.
 
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
+from .flow_table_priorities import *
 
 log = core.getLogger("diamond-controller")
 
@@ -65,11 +66,6 @@ class SmartSwitchController (object):
     the message is from two hosts connected to the same switch.
     """
     
-    PRIORITY_FLOOD_FORWARD_ALWAYS = 1
-    PRIORITY_FLOOD_IF_PORT = PRIORITY_FLOOD_FORWARD_ALWAYS + 1
-    PRIORITY_SEND_FROM_MAC = PRIORITY_FLOOD_IF_PORT + 1
-    PRIORITY_SEND_TO_MAC = PRIORITY_SEND_FROM_MAC + 1
-    
     def __no_flood_mod(self, port):
         """
         Creates a port mod message to disable flooding to a port
@@ -90,7 +86,7 @@ class SmartSwitchController (object):
         forward to port 1, and forward to controller
         """
         msg = of.ofp_flow_mod()
-        msg.priority = self.PRIORITY_FLOOD_FORWARD_ALWAYS
+        msg.priority = PRIORITY_FLOOD_FORWARD_ALWAYS
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         msg.actions.append(of.ofp_action_output(port = 1))
         msg.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
@@ -104,7 +100,7 @@ class SmartSwitchController (object):
         on a specific port
         """
         msg = of.ofp_flow_mod()
-        msg.priority = self.PRIORITY_FLOOD_IF_PORT
+        msg.priority = PRIORITY_FLOOD_IF_PORT
         msg.match.in_port = port_num
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         
@@ -116,7 +112,7 @@ class SmartSwitchController (object):
         mac address to a specific port #
         """
         msg = of.ofp_flow_mod()
-        msg.priority = self.PRIORITY_SEND_TO_MAC
+        msg.priority = PRIORITY_SEND_TO_MAC
         msg.match.dl_dst = mac
         msg.match.port = None
         msg.actions.append(of.ofp_action_output(port = port))
@@ -129,7 +125,7 @@ class SmartSwitchController (object):
         mac address to port 1
         """
         msg = of.ofp_flow_mod()
-        msg.priority = self.PRIORITY_SEND_FROM_MAC
+        msg.priority = PRIORITY_SEND_FROM_MAC
         msg.match.dl_src = mac
         msg.match.port = None
         msg.actions.append(of.ofp_action_output(port = 1))
