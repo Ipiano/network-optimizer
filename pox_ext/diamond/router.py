@@ -1,6 +1,8 @@
 
 """
-This component is for use with the diamond topology.
+This component is a router for a diamond network topology.
+It ensures that all hosts on the network will be able to send
+data to all other hosts.
 
 It assumes that there is a network with the following setup
 
@@ -28,15 +30,7 @@ on the rest of their ports.
 It is expected that the network configuration will not change after startup
 
 Additionally it assumes that the dpid of switch 1 is 1, the dpid of
-switch 2 is 2, and so forth. Finally, it takes as a command line argument
-the number N of how many switches are on either side of the diamond, and assumes
-that the hosts on the left use ip address 10.0.0.1-10.0.0.n and that the hosts 
-on the right are 10.0.0.n+1 - 10.0.0.2n
-
-This controller makes the final assumptions that all traffic between the hosts will
-use a TCP connection, and therefore it is possible to use SYN and FIN messages
-to know when connections are going up or down, and that the connection is fairly one-sided
-as in the case of a file download.
+switch 2 is 2, and so forth. 
 """
 
 from pox.core import core
@@ -46,7 +40,7 @@ log = core.getLogger("diamond-controller")
 
 class SmartSwitchController (object):
     """
-    Controller for one of the two switches on the side
+    Controller for one of the two switches on the sides
     of the diamond.
     
     On startup, the controller will set the following rules
@@ -56,7 +50,7 @@ class SmartSwitchController (object):
     3. Any message received on port 1 or port 2 will be flooded to all ports
         other than 1 and 2
         
-    This initial configuration should support general communication
+    This initial configuration supports general communication
     around the diamond. After startup, the following modifications
     will be automatically made
     
@@ -69,18 +63,6 @@ class SmartSwitchController (object):
     This will override initial rules 2 and 3. Note rule 4 must have higher priority
     than rule 5 so that rule 4 for a different mac address can preempt rule 5 when
     the message is from two hosts connected to the same switch.
-    
-    Finally, during runtime, this controller can be commanded to set the route
-    for a specific IP address pair to be port 1 or 2. If exactly 1 of the IP addresses
-    is a locally connected host, then at that point, two things will happen
-    * Any flow for that IP address pair will be removed
-    * A new flow will be installed to route from the locally attached IP to the target port
-    
-    Note, this last control option will fail if the port number for the locally attached IP
-    is unknown. To resolve this, ensure that both of hosts using the IP addresses have sent
-    at least one IP message before calling this. This can easily be done by
-    * Having every host on the network ping every other host
-    * Waiting for a TCP connection to be established before setting this route
     """
     
     PRIORITY_FLOOD_FORWARD_ALWAYS = 1
