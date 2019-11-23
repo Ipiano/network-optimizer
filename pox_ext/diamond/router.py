@@ -39,6 +39,10 @@ from .flow_table_priorities import *
 
 log = core.getLogger("diamond-controller")
 
+class MissingPortError(Exception):
+    def __init__(self, port):
+        self.port = port
+
 class SmartSwitchController (object):
     """
     Controller for one of the two switches on the sides
@@ -72,10 +76,14 @@ class SmartSwitchController (object):
         """
         msg = of.ofp_port_mod()
         msg.port_no = port
-        msg.hw_addr = self.__connection.ports[port].hw_addr
         msg.config = of.OFPPC_NO_FLOOD
         msg.mask = of.OFPPC_NO_FLOOD
         msg.advertise = 0
+        
+        try:
+            msg.hw_addr = self.__connection.ports[port].hw_addr
+        except IndexError as ex:
+            raise MissingPortError(port)
         
         return msg
         
@@ -132,7 +140,7 @@ class SmartSwitchController (object):
         
         return msg;
         
-    def __set_initial_config(self):
+    def __set_default_route(self):
         # 1. Ports 1 and 2 will be marked no-flood
         self.__connection.send(self.__no_flood_mod(1))
         self.__connection.send(self.__no_flood_mod(2))
@@ -150,7 +158,7 @@ class SmartSwitchController (object):
         self.__connection.send(self.__flood_if_port_mod(1))
         self.__connection.send(self.__flood_if_port_mod(2))
         
-    def __learn_port(self, port, mac):
+    def __learn_port_route(self, port, mac):
         """
         Learns that a specific mac address is attached
         to a specific port and reconfigures the switch
@@ -168,10 +176,10 @@ class SmartSwitchController (object):
         # its flow rule will be un-learned
         
         if mac in self.__mac_to_port:
-            log.debug("Duplicate port/mac mapping: {} -> {}".format(port, mac))
+            self.log.debug("Duplicate port/mac mapping: {} -> {}".format(port, mac))
             return
         
-        log.info("Switch {} mapping port {} to mac {}".format(self.__dpid, port, mac))
+        self.log.info("Mapping port {} to mac {}".format(self.__dpid, port, mac))
         self.__mac_to_port[mac] = port
         
         # 4. Messages for that mac will be forwarded to that port
@@ -180,31 +188,51 @@ class SmartSwitchController (object):
         # 5. Messages from that mac will be forwarded to port 1
         self.__connection.send(self.__send_from_mac_to_port1(mac))
         
+    def __try_set_default_route(self):
+        if self.__default_route_is_setup:
+            return
+    
+        try:
+            self.__set_default_route()
+            self.log.info("Setup default routes".format(self.__dpid))
+            self.__default_route_is_setup = True
+        except MissingPortError as ex:
+            self.log.warning("Unable to set default route; missing port {}".format(self.__dpid, ex.port))
+   
     
     def __init__(self, connection):
-        log.info("Smart switch {} connected".format(connection.dpid))
-        
         self.__connection = connection
         self.__dpid = connection.dpid
+        self.__default_route_is_setup = False
+        
+        self.log = log.getChild("switch-{}".format(self.__dpid))
+        self.log.info("Smart switch {} connected".format(self.__dpid))
         
         self.__connection.addListenerByName("PacketIn", self.__packetIn)
+        self.__connection.addListenerByName("PortStatus", self.__portStatus)
         
         self.__mac_to_port = {}
 
-        self.__set_initial_config()
+        self.log.info("Attempting to set up default routes...")
+        self.__try_set_default_route()
             
     def __packetIn(self, event):
         packet_type = event.parsed # This is the parsed packet data.
         if not packet_type.parsed:
-          log.warning("Ignoring incomplete packet")
+          self.log.warning("Ignoring incomplete packet")
           return
 
         packet_in = event.ofp # The actual ofp_packet_in message.
-        log.debug("Switch {} got packet on port {}".format(self.__dpid, event.port))
+        self.log.debug("Got packet on port {}".format(self.__dpid, event.port))
         
         eth = packet_type.find("ethernet")
         if eth:
-            self.__learn_port(event.port, eth.src)
+            self.__learn_port_route(event.port, eth.src)
+        
+    def __portStatus(self, event):
+        self.log.info("Ports changed!")
+
+        self.__try_set_default_route()
         
 class DumbSwitchController (object):
     """
