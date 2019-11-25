@@ -26,17 +26,17 @@ def random_uploads( network ):
     # Adds a NAT adapter to switch 1
     # at ip address 10.0.0.2n+1
     network.addNAT().configDefault()
-
+       
     network.start()
        
-    for host in network.hosts:
+    for host in network.hosts[:-1]:
         ip_end = host.IP()[host.IP().rfind('.')+1:]
-        cmd = "python3 ~/network-optimizer/random_uploader.py 10.0.0 {} 9000 {} > ./logs/{}-log 2>&1 &".format(ip_end, len(network.hosts), str(host))
+        cmd = "python3 ~/network-optimizer/random_uploader.py 10.0.0 {} 9000 {} > ./logs/{}-log 2>&1 &".format(ip_end, len(network.hosts)-1, str(host))
         host.cmd(cmd)
-       
+
     CLI( network )
     
-    for host in network.hosts:
+    for host in network.hosts[:-1]:
         host.cmd("kill % python3")
     
     network.stop()
