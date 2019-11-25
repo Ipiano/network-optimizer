@@ -223,10 +223,6 @@ class ConnectionPoller:
         for connection_if in self.__connections:
             connection_if.close()
 
-        with self.__lock:
-            self.__removes = self.__connections
-            self.__update = True
-
     def poll(self):
         if self.__update:
             with self.__lock:
