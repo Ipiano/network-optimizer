@@ -41,7 +41,7 @@ class TCPConnection(ConnectionIf):
         except OSError as err:
             self.__open = False
             log.debug("Failed to read; raising from" + str(err))
-            raise ConnectionIsClosedError from err
+            raise ConnectionIsClosedError
 
     def _write(self, data):
         if not self.__open:
@@ -53,7 +53,7 @@ class TCPConnection(ConnectionIf):
         except OSError as err:
             self.__open = False
             log.debug("Failed to write; raising from" + str(err))
-            raise ConnectionIsClosedError from err
+            raise ConnectionIsClosedError 
 
 
 class TCPClientConnection(TCPConnection):

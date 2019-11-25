@@ -39,7 +39,7 @@ import pox.openflow.libopenflow_01 as of
 
 from .flow_table_priorities import *
 
-log = core.getLogger("diamond-controller")
+log = core.getLogger("diamond.router")
 
 class MissingPortError(Exception):
     def __init__(self, port):
@@ -277,7 +277,7 @@ class DumbSwitchController (object):
         connection.send(self.__dumb_flow_mod(1, 2))
         connection.send(self.__dumb_flow_mod(2, 1))
 
-class EqualDiamondController (object):
+class EqualDiamondRouter (object):
     """
     A single controller should be created on startup,
     and then given access to all connections found.
@@ -319,6 +319,6 @@ class EqualDiamondController (object):
             log.info("Unknown switch {} ignored".format(connection.dpid))
 
 def launch ():
-    controller = EqualDiamondController()
-    core.register(controller, "diamond_controller")
+    controller = EqualDiamondRouter()
+    core.register(controller, "diamond_routers")
   

@@ -12,6 +12,7 @@ from mininet.cli import CLI
 from mininet.log import lg, info
 from mininet.node import Node, RemoteController, OVSSwitch
 from mininet.util import waitListening
+from mininet.link import Intf
 
 from diamond import DiamondTopoEqualWeight
 
@@ -20,8 +21,12 @@ def DiamondNet( edge_hosts, **kwargs ):
     topo = DiamondTopoEqualWeight( edge_hosts )
     return Mininet( topo, **kwargs )
 
-def random_uploads( network ):
+def random_uploads( network ): 
     
+    # Adds a NAT adapter to switch 1
+    # at ip address 10.0.0.2n+1
+    network.addNAT().configDefault()
+
     network.start()
        
     for host in network.hosts:
