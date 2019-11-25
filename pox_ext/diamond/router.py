@@ -34,7 +34,7 @@ switch 2 is 2, and so forth.
 """
 
 from pox.core import core
-from pox.lib.addresses import EthAddr
+from pox.lib.addresses import EthAddr, IPAddr
 import pox.openflow.libopenflow_01 as of
 
 from .flow_table_priorities import *
@@ -158,6 +158,32 @@ class SmartSwitchController (object):
         
         return msg;
         
+    def __ip_route_add_mod(self, ip, port):
+        """
+        Produces a flow mod to send messages from the given
+        ip address out the target port.
+        """
+        msg = of.ofp_flow_mod()
+        msg.priority = PRIORITY_ROUTE_CONNECTION
+        msg.match.nw_src = (IPAddr(ip), 32)
+        msg.match.dl_type = 0x0800
+        msg.actions.append(of.ofp_action_output(port = port))
+        
+        return msg
+        
+    def __ip_route_delete_mod(self, ip, port):
+        """
+        Produces a flow mod to remove a flow mod
+        to send messages from the given
+        ip address out the target port.
+        """
+        msg = self.__ip_route_add_mod(ip, port)
+        msg.command = of.OFPFC_DELETE
+        msg.actions = []
+        msg.out_port = port
+        
+        return msg
+        
     def __set_default_route(self):
         # 1. Ports 1 and 2 will be marked no-flood
         self.__connection.send(self.__no_flood_mod(1))
@@ -233,6 +259,7 @@ class SmartSwitchController (object):
         self.__connection.addListenerByName("PortStatus", self.__portStatus)
         
         self.__mac_to_port = {}
+        self.__learned_ips = set()
 
         self.log.info("Attempting to set up default routes...")
         self.__try_set_default_route()
@@ -247,13 +274,42 @@ class SmartSwitchController (object):
         self.log.debug("Got packet on port {}".format(event.port))
         
         eth = packet_type.find("ethernet")
-        if eth:
+        ip = packet_type.find("ipv4")
+        if ip and eth:
             self.__learn_port_route(event.port, eth.src)
+            self.__learned_ips.add(ip.srcip)
         
     def __portStatus(self, event):
         self.log.info("Ports changed!")
 
         self.__try_set_default_route()
+        
+    def has_learned(self, ip):
+        return IPAddr(ip) in self.__learned_ips
+        
+    def __add_route(self, ip, port):
+        self.log.debug("Adding rule for {} out port {}".format(ip, port))
+        self.__connection.send(self.__ip_route_add_mod(ip, port))
+        
+    def __remove_route(self, ip, port):
+        self.log.debug("Removing rule for {} out port {}".format(ip, port))
+        self.__connection.send(self.__ip_route_delete_mod(ip, port))
+        
+    def add_route(self, src_ip, dest_ip, port):
+        if self.has_learned(src_ip):
+            assert(not self.has_learned(dest_ip))
+            self.__add_route(src_ip, port)
+        else:
+            assert(self.has_learned(dest_ip))
+            self.__add_route(dest_ip, port)
+        
+    def remove_route(self, src_ip, dest_ip, port):
+        if self.has_learned(src_ip):
+            assert(not self.has_learned(dest_ip))
+            self.__remove_route(src_ip, port)
+        else:
+            assert(self.has_learned(dest_ip))
+            self.__remove_route(dest_ip, port)
         
 class DumbSwitchController (object):
     """
@@ -318,7 +374,69 @@ class EqualDiamondRouter (object):
         else:
             log.info("Unknown switch {} ignored".format(connection.dpid))
 
+    """
+    add/remove route functions are used
+    to route messages between two sides of the diamond
+    either through the top switch or the bottom. For this to
+    work, there must have been at least one message sent from 
+    both addresses so that their locations are known. If 
+    this has not happened, the request is ignored.
+    """
+    
+    def __route_should_be_established(self, src_ip, dest_ip):
+        """
+        Checks if a route should be established; this requires
+        that both of the IP addresses are known by at least one of
+        [switch 1, switch 4] and that they are not both known by the same
+        switch (that would be a useless rule to add)
+        """
+        if not self.__switch_1 or not self.__switch_4:
+            log.warning("Cannot establish route: Switches not online")
+            return False
+        
+        src_learned_by = 0
+        if self.__switch_1.has_learned(src_ip):
+            src_learned_by = 1
+        elif self.__switch_4.has_learned(src_ip):
+            src_learned_by = 4
+       
+        dest_learned_by = 0
+        if self.__switch_1.has_learned(dest_ip):
+            dest_learned_by = 1
+        elif self.__switch_4.has_learned(dest_ip):
+            dest_learned_by = 4
+       
+        if not src_learned_by or not dest_learned_by:
+            log.warning("Cannot establish route: {} or {} not known".format(src_ip, dest_ip))
+            return False
+              
+        if src_learned_by == dest_learned_by:
+            log.info("Not going to establish route: {} and {} are attached to the same switch".format(src_ip, dest_ip))
+            return False
+            
+        return True
+    
+    def add_route_up(self, src_ip, dest_ip):
+        if self.__route_should_be_established(src_ip, dest_ip):
+            self.__switch_1.add_route(src_ip, dest_ip, 1)
+            self.__switch_4.add_route(src_ip, dest_ip, 2)
+            
+    def add_route_down(self, src_ip, dest_ip):
+        if self.__route_should_be_established(src_ip, dest_ip):
+            self.__switch_1.add_route(src_ip, dest_ip, 2)
+            self.__switch_4.add_route(src_ip, dest_ip, 1)
+        
+    def remove_route_up(self, src_ip, dest_ip):
+        if self.__route_should_be_established(src_ip, dest_ip):
+            self.__switch_1.remove_route(src_ip, dest_ip, 1)
+            self.__switch_4.remove_route(src_ip, dest_ip, 2)
+        
+    def remove_route_down(self, src_ip, dest_ip):
+        if self.__route_should_be_established(src_ip, dest_ip):
+            self.__switch_1.remove_route(src_ip, dest_ip, 2)
+            self.__switch_4.remove_route(src_ip, dest_ip, 1)
+
 def launch ():
     controller = EqualDiamondRouter()
-    core.register(controller, "diamond_routers")
+    core.register("diamond_router", controller)
   

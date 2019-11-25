@@ -168,6 +168,7 @@ class Client(Thread):
 
             if self.__notifier:
                 self.__notifier.send_start_connection(self.__addr)
+                time.sleep(1)
 
             total_bytes = 0;
             num_writes = self.__random.randint(500, 10000)
@@ -190,6 +191,7 @@ class Client(Thread):
 
             if self.__notifier:
                 self.__notifier.send_stop_connection(self.__addr)
+                time.sleep(1)
             
             log.info("Uploaded {} bytes to {}:{}".format(total_bytes, self.__addr, self.__port))
             log.debug("Closing client")

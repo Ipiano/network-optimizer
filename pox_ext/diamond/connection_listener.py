@@ -14,7 +14,7 @@ class TCPConnectionEvent(Event):
         self.__dest = dest
         
     @property
-    def source(self):
+    def src(self):
         return self.__source
         
     @property
@@ -33,7 +33,12 @@ class ConnectionHandler(BaseRequestHandler, object):
         
         self.server.handle_message(json.loads(data))
         
-class ConnectionListener(UDPServer, EventMixin):
+class ConnectionListener(UDPServer, EventMixin, object):
+    _eventMixin_events = set([
+        UploadStarted,
+        UploadEnded
+      ])
+      
     def __init__(self):
         UDPServer.__init__(self, ("192.168.44.42", 6634), ConnectionHandler, bind_and_activate=False)
         self.allow_reuse_address = True
@@ -69,5 +74,5 @@ class ConnectionListener(UDPServer, EventMixin):
                 
 def launch ():
     listener = ConnectionListener()
-    core.register(listener, "diamond_listener")
+    core.register("diamond_listener", listener)
   
