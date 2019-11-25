@@ -52,12 +52,79 @@ class ConnectionManager(object):
         core.diamond_listener.addListenerByName("UploadEnded", self.__connectionEnded)
 
     def __connectionStarted(self, event):
-        log.info("Connection {} -> {} started".format(event.src, event.dest))
-        core.diamond_router.add_route_up(event.src, event.dest)
+        log.debug("Connection {} -> {} started".format(event.src, event.dest))
+        
+        # Key for dict lookup
+        key = tuple(sorted([event.dest, event.src]))
+        
+        # Check if the connection already exists
+        # on one of the routes. If so, just mark it
+        # as being used another time        
+        if key in self.__up_connections:
+            log.info("Connection {} <-> {} already being routed up".format(event.dest, event.src))
+            self.__up_connections[key] += 1
+
+            
+        elif key in self.__down_connections:
+            log.info("Connection {} <-> {} already being routed down".format(event.dest, event.src))
+            self.__down_connections[key] += 1
+
+             
+        # Doesn't exist? If there's more connections on one side than the other
+        # add it to the one side, otherwise add it up
+        else:
+            if len(self.__down_connections) < len(self.__up_connections):
+                if core.diamond_router.add_route_down(event.src, event.dest):
+                    log.info("Connection {} <-> {} routed down".format(event.src, event.dest))
+                    self.__down_connections[key] = 1
+            else:
+                if core.diamond_router.add_route_up(event.src, event.dest):
+                    log.info("Connection {} <-> {} routed up".format(event.src, event.dest))
+                    self.__up_connections[key] = 1
+        
+        log.info("{} connections routed down, {} routed up".format(len(self.__down_connections), len(self.__up_connections)))
         
     def __connectionEnded(self, event):
-        log.info("Connection {} -> {} ended".format(event.src, event.dest))
-        core.diamond_router.remove_route_up(event.src, event.dest)
+        log.debug("Connection {} -> {} ended".format(event.src, event.dest))
+        
+        # Key for dict lookup
+        key = tuple(sorted([event.dest, event.src]))
+        
+        # Check which way the connection went
+        # and mark it one less; if it's at 0 now,
+        # undo the routing     
+        if key in self.__up_connections:
+            self.__up_connections[key] -= 1
+            if self.__up_connections[key] == 0:
+                log.info("Connection {} <-> {} is unused, removing up route".format(event.dest, event.src))
+                del self.__up_connections[key]
+                core.diamond_router.remove_route_up(event.src, event.dest)
+            else:
+                log.info("Connection {} <-> {} is used {} times; staying routed up".format(event.dest, event.src, self.__up_connections[key]))   
+            
+        elif key in self.__down_connections:
+            self.__down_connections[key] -= 1
+            if self.__down_connections[key] == 0:
+                log.info("Connection {} <-> {} is unused, removing down route".format(event.dest, event.src))
+                del self.__down_connections[key]
+                core.diamond_router.remove_route_down(event.src, event.dest)
+            else:
+                log.info("Connection {} <-> {} is used {} times; staying routed down".format(event.dest, event.src, self.__down_connections[key]))   
+
+        # Rebalance; if there's > 2 difference between the sides
+        while len(self.__up_connections) > len(self.__down_connections) + 1:
+            key, value = self.__up_connections.popitem()
+            log.info("Moving connection {} <-> {} from up to down".format(key[0], key[1]))
+            core.diamond_router.remove_route_up(key[0], key[1])
+            core.diamond_router.add_route_down(key[0], key[1])
+            
+        while len(self.__down_connections) > len(self.__up_connections) + 1:
+            key, value = self.__down_connections.popitem()
+            log.info("Moving connection {} <-> {} from down to up".format(key[0], key[1]))
+            core.diamond_router.remove_route_down(key[0], key[1])
+            core.diamond_router.add_route_up(key[0], key[1])
+            
+        log.info("{} connections routed down, {} routed up".format(len(self.__down_connections), len(self.__up_connections)))
         
 def try_launch():
     manager = ConnectionManager()
