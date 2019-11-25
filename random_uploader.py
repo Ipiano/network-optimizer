@@ -171,7 +171,7 @@ class Client(Thread):
                 time.sleep(1)
 
             total_bytes = 0;
-            num_writes = self.__random.randint(500, 10000)
+            num_writes = self.__random.randint(50, 200)
             for i in range(num_writes):
                 if self.__shutdown:
                     break
@@ -187,7 +187,7 @@ class Client(Thread):
                     log.warning("Server closed before client finished")
                     break
                 
-                time.sleep(0)
+                time.sleep(self.__random.uniform(0, 0.25))
 
             if self.__notifier:
                 self.__notifier.send_stop_connection(self.__addr)
@@ -196,6 +196,7 @@ class Client(Thread):
             log.info("Uploaded {} bytes to {}:{}".format(total_bytes, self.__addr, self.__port))
             log.debug("Closing client")
             self.__poller.close_all_connections()
+
         except ConnectionRefusedError:
             log.warning("Unable to connect to {}:{}".format(self.__addr, self.__port))
             self.__shutdown = True
@@ -216,8 +217,6 @@ connection_notifier = ConnectionNotifier()
 
 while running:
     time.sleep(random.randint(5, 10))
-    c = Client("{}.{}".format(subnet, random.randint(1, max_ip)), server_port, connection_notifier)
-    c.start()
     
     for client in clients:
         if client.done():
@@ -225,6 +224,11 @@ while running:
             client.join()
             
             clients.remove(client)
+    
+    if len(clients) < 10:
+        c = Client("{}.{}".format(subnet, random.randint(1, max_ip)), server_port, connection_notifier)
+        c.start()
+    
     
 cleanup()
 
