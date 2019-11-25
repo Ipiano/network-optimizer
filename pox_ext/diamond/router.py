@@ -55,22 +55,20 @@ class SmartSwitchController (object):
     2. Any message received on port > 2 will be forwarded to this controller,
         flooded to all ports > 2, and forwarded to port 1
     3. Any message received on port 1 or port 2 will be flooded to all ports
-        other than 1 and 2
+        other than 1 and 2, and also forwarded to this controller
         
     This initial configuration supports general communication
     around the diamond. After startup, the following modifications
     will be automatically made
     
-    When a message is received on port > 2, the mac and IP address of the sender
-    will be recorded and two new flow rules will be added with higher priority
+    When a message is received, the mac (and, if it's not on port 1 or 2 IP) address of the sender
+    will be recorded and new flow rules will be added with higher priority
     than the default rules.
-    4. Messages for that mac will be forwarded to that port
-    5. Messages from that mac will be forwarded to port 1
-    6. Messages from that mac to the broadcast address will be flooded and forwarded to port 1
+    4. Messages for that mac will be forwarded to that port (if the port is 2, 1 will be used)
+    5a. Messages from that mac will be forwarded to port 1 and flooded (if it is not on port 1 or 2)
+    5b. Messages from that mac will be flooded to all local ports (if it is on port 1 or 2)
     
-    This will override initial rules 2 and 3. Note rule 4 must 
-    have higher priority than rule 5 so it can preempt rule 5 when
-    there is a message going between two hosts on the same switch
+    Note, for this to work, rule 5 must be lower priority than rule 4
     """
     
     def __no_flood_mod(self, port):
@@ -90,7 +88,7 @@ class SmartSwitchController (object):
         
         return msg
         
-    def __flood_and_forward_always_mod(self):
+    def __flood_and_forward_local_mod(self):
         """
         Creates a flow mod to flood
         flood any messages received,
@@ -103,17 +101,18 @@ class SmartSwitchController (object):
         msg.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
         
         return msg;
-        
-    def __flood_if_port_mod(self, port_num):
+       
+    def __flood_and_forward_other_mod(self, port):
         """
         Creates a flow mod to flood
-        flood any messages received
-        on a specific port
+        flood any messages received,
+        and forward to controller, from a specific port
         """
         msg = of.ofp_flow_mod()
         msg.priority = PRIORITY_FLOOD_IF_PORT
-        msg.match.in_port = port_num
+        msg.match.in_port = port
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+        msg.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
         
         return msg;
         
@@ -130,61 +129,73 @@ class SmartSwitchController (object):
         
         return msg;
         
-    def __send_from_mac_to_port1_mod(self, mac):
+    def __flood_and_forward_from_mac_mod(self, mac):
         """
         Creates a flow mod to send messages from a specific
-        mac address to port 1
+        mac address to port 1 and flood them
         """
         msg = of.ofp_flow_mod()
         msg.priority = PRIORITY_SEND_FROM_MAC
         msg.match.dl_src = mac
         msg.match.port = None
         msg.actions.append(of.ofp_action_output(port = 1))
+        msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         
         return msg;
-      
-    def __broadcast_from_mac_mod(self, mac):
+
+    def __flood_from_mac_mod(self, mac):
         """
-        Creates a flow mod to flood
-        flood and forward to port 1
-        any messages broadcast by a sepcific mac
+        Creates a flow mod to flood messages from a specific
+        mac address
         """
         msg = of.ofp_flow_mod()
-        msg.priority = PRIORITY_BROADCAST_FROM_MAC
+        msg.priority = PRIORITY_SEND_FROM_MAC
         msg.match.dl_src = mac
-        msg.match.dl_dst = EthAddr("ff:ff:ff:ff:ff:ff")
+        msg.match.port = None
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-        msg.actions.append(of.ofp_action_output(port = 1))
         
         return msg;
-        
-    def __ip_route_add_mod(self, ip, port):
+              
+    def __ip_route_add_mod(self, local_ip, other_ip, port):
         """
         Produces a flow mod to send messages from the given
         ip address out the target port.
         """
         msg = of.ofp_flow_mod()
         msg.priority = PRIORITY_ROUTE_CONNECTION
-        msg.match.nw_src = (IPAddr(ip), 32)
+        msg.match.nw_src = (IPAddr(local_ip), 32)
+        msg.match.nw_dst = (IPAddr(other_ip), 32)
         msg.match.dl_type = 0x0800
         msg.actions.append(of.ofp_action_output(port = port))
         
         return msg
         
-    def __ip_route_delete_mod(self, ip, port):
+    def __ip_route_delete_mod(self, local_ip, other_ip, port):
         """
         Produces a flow mod to remove a flow mod
         to send messages from the given
         ip address out the target port.
         """
-        msg = self.__ip_route_add_mod(ip, port)
+        msg = self.__ip_route_add_mod(local_ip, other_ip, port)
         msg.command = of.OFPFC_DELETE
         msg.actions = []
         msg.out_port = port
         
         return msg
+      
+    def __clear_table_mod(self):
+        """
+        Produces a flow mod to clear the table
+        """
+        msg = of.ofp_flow_mod()
+        msg.command = of.OFPFC_DELETE
+        
+        return msg
         
     def __set_default_route(self):
+        # 0. Clear the table
+        self.__connection.send(self.__clear_table_mod())
+        
         # 1. Ports 1 and 2 will be marked no-flood
         self.__connection.send(self.__no_flood_mod(1))
         self.__connection.send(self.__no_flood_mod(2))
@@ -193,14 +204,12 @@ class SmartSwitchController (object):
         # flooded, and forwarded to port 1.
         # Since ports 1 and 2 are no-flood, it will only flood
         # to the ports > 2
-        self.__connection.send(self.__flood_and_forward_always_mod())
+        self.__connection.send(self.__flood_and_forward_local_mod())
         
         # 3. Any message received on port 1 or port 2 will be flooded to all ports
-        # other than 1 and 2; this will preempt the mod above by priority
-        # so messages from ports 1 and 2 will not get forwarded to port 1
-        # or to this controller
-        self.__connection.send(self.__flood_if_port_mod(1))
-        self.__connection.send(self.__flood_if_port_mod(2))
+        # other than 1 and 2, and also forwarded to this controller
+        self.__connection.send(self.__flood_and_forward_other_mod(1))        
+        self.__connection.send(self.__flood_and_forward_other_mod(2))
         
     def __learn_port_route(self, port, mac):
         """
@@ -223,17 +232,21 @@ class SmartSwitchController (object):
             self.log.debug("Duplicate port/mac mapping: {} -> {}".format(port, mac))
             return
         
-        self.log.info("Mapping port {} to mac {}".format(port, mac))
+        # Outgoing messages to the diamond always default to port 1
+        port = 1 if port == 2 else port
+        
+        self.log.info("Mapping mac {} to port {}".format(mac, port))
         self.__mac_to_port[mac] = port
         
         # 4. Messages for that mac will be forwarded to that port
         self.__connection.send(self.__send_for_mac_to_port_mod(mac, port))
         
-        # 5. Messages from that mac will be forwarded to port 1
-        self.__connection.send(self.__send_from_mac_to_port1_mod(mac))
-        
-        # 6. Messages from that mac to the broadcast address will be flooded and forwarded to port 1
-        self.__connection.send(self.__broadcast_from_mac_mod(mac))
+        # 5. Messages from that mac will be flooded and forwarded to port 1
+        # or just flooded
+        if port == 1:
+            self.__connection.send(self.__flood_from_mac_mod(mac))
+        else:
+            self.__connection.send(self.__flood_and_forward_from_mac_mod(mac))
         
     def __try_set_default_route(self):
         if self.__default_route_is_setup:
@@ -277,7 +290,11 @@ class SmartSwitchController (object):
         ip = packet_type.find("ipv4")
         if ip and eth:
             self.__learn_port_route(event.port, eth.src)
-            self.__learned_ips.add(ip.srcip)
+            
+            # Only track IP addresses of hosts connected
+            # directly
+            if event.port > 2:
+                self.__learned_ips.add(ip.srcip)
         
     def __portStatus(self, event):
         self.log.info("Ports changed!")
@@ -287,29 +304,29 @@ class SmartSwitchController (object):
     def has_learned(self, ip):
         return IPAddr(ip) in self.__learned_ips
         
-    def __add_route(self, ip, port):
-        self.log.debug("Adding rule for {} out port {}".format(ip, port))
-        self.__connection.send(self.__ip_route_add_mod(ip, port))
+    def __add_route(self, local_ip, other_ip, port):
+        self.log.debug("Adding rule for {} -> {} out port {}".format(local_ip, other_ip, port))
+        self.__connection.send(self.__ip_route_add_mod(local_ip, other_ip, port))
         
-    def __remove_route(self, ip, port):
-        self.log.debug("Removing rule for {} out port {}".format(ip, port))
-        self.__connection.send(self.__ip_route_delete_mod(ip, port))
+    def __remove_route(self, local_ip, other_ip, port):
+        self.log.debug("Removing rule for {} -> {} out port {}".format(local_ip, other_ip, port))
+        self.__connection.send(self.__ip_route_delete_mod(local_ip, other_ip, port))
         
     def add_route(self, src_ip, dest_ip, port):
         if self.has_learned(src_ip):
             assert(not self.has_learned(dest_ip))
-            self.__add_route(src_ip, port)
+            self.__add_route(src_ip, dest_ip, port)
         else:
             assert(self.has_learned(dest_ip))
-            self.__add_route(dest_ip, port)
+            self.__add_route(dest_ip, src_ip, port)
         
     def remove_route(self, src_ip, dest_ip, port):
         if self.has_learned(src_ip):
             assert(not self.has_learned(dest_ip))
-            self.__remove_route(src_ip, port)
+            self.__remove_route(src_ip, dest_ip, port)
         else:
             assert(self.has_learned(dest_ip))
-            self.__remove_route(dest_ip, port)
+            self.__remove_route(dest_ip, src_ip, port)
         
 class DumbSwitchController (object):
     """
@@ -420,11 +437,15 @@ class EqualDiamondRouter (object):
         if self.__route_should_be_established(src_ip, dest_ip):
             self.__switch_1.add_route(src_ip, dest_ip, 1)
             self.__switch_4.add_route(src_ip, dest_ip, 2)
+            return True
+        return False
             
     def add_route_down(self, src_ip, dest_ip):
         if self.__route_should_be_established(src_ip, dest_ip):
             self.__switch_1.add_route(src_ip, dest_ip, 2)
             self.__switch_4.add_route(src_ip, dest_ip, 1)
+            return True
+        return False
         
     def remove_route_up(self, src_ip, dest_ip):
         if self.__route_should_be_established(src_ip, dest_ip):
