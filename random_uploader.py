@@ -14,27 +14,31 @@ import logging
 import random
 import json
 
-if len(sys.argv) != 5:
-    help = """Usage: python3 {} subnet local-ip port max-ip
+if len(sys.argv) != 7:
+    help = """Usage: python3 {} listener-ip listener-port subnet local-ip port max-ip
 
-    subnet      First 3 numbers of IP address (e.g. 10.0.0)
-    local-ip    Last number of IP address (e.g. 4)
-    port        Port to listen on for incoming connections and to connect to
-                    for 'uploads'
-    max-ip      Highest value that any address on the subnet uses
+    listener-ip     IP address of the connection state listener
+    listener-port           Port used by the connection state listener
+    subnet          First 3 numbers of IP address (e.g. 10.0.0)
+    local-ip        Last number of IP address (e.g. 4)
+    port            Port to listen on for incoming connections and to connect to
+                        for 'uploads'
+    max-ip          Highest value that any address on the subnet uses
     
     For example, if this device had IP address 192.168.1.3, and 
     was connected to devices with address 192.168.1.1 - 192.168.1.10,
     the usage would be
-        python3 {} 192.168.1 3 port 10
+        python3 {} ip port 192.168.1 3 port 10
 """
     print(help.format(sys.argv[0], sys.argv[0]))
     sys.exit(1)
 
-subnet = sys.argv[1]
-local_ip = "{}.{}".format(subnet, sys.argv[2])
-server_port = int(sys.argv[3])
-max_ip = int(sys.argv[4])
+listener_ip = sys.argv[1]
+listener_port = int(sys.argv[2])
+subnet = sys.argv[3]
+local_ip = "{}.{}".format(subnet, sys.argv[4])
+server_port = int(sys.argv[5])
+max_ip = int(sys.argv[6])
 
 root_log = logging.getLogger("app")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -76,7 +80,7 @@ class ConnectionNotifier:
         self.__poll_thread = ConnectionPollerThread(self.__poller)
         self.__poll_thread.start()
         
-        self.__connection = UDPPublisher("192.168.44.42", 6634, self.__closed)
+        self.__connection = UDPPublisher(listener_ip, listener_port, self.__closed)
         self.__poller.add_connection(self.__connection)
             
     def __closed(self, socket):

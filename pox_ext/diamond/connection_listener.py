@@ -39,8 +39,8 @@ class ConnectionListener(UDPServer, EventMixin, object):
         UploadEnded
       ])
       
-    def __init__(self):
-        UDPServer.__init__(self, ("192.168.44.42", 6634), ConnectionHandler, bind_and_activate=False)
+    def __init__(self, address, port):
+        UDPServer.__init__(self, (address, port), ConnectionHandler, bind_and_activate=False)
         self.allow_reuse_address = True
         self.timeout = 0.1
         self.server_bind()
@@ -72,7 +72,7 @@ class ConnectionListener(UDPServer, EventMixin, object):
         except KeyError:
             log.warning("Unexpected message: {}".format(msg))
                 
-def launch ():
-    listener = ConnectionListener()
+def launch (address, port=6634):
+    listener = ConnectionListener(address, port)
     core.register("diamond_listener", listener)
   
